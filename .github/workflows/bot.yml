@@ -1,25 +1,38 @@
 
 name: Bot AI Stockity
 
-'on':
+on:
   workflow_dispatch:
   schedule:
-    - cron: "2,7,12,17,22,27,32,37,42,47,52,57 * * * *"
+    - cron: "*/5 * * * *"
+
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: bot-ai-stockity
+  cancel-in-progress: false
+
 jobs:
   run:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+    timeout-minutes: 2
 
-      - uses: actions/setup-python@v5
+    steps:
+      - name: Ambil kode bot
+        uses: actions/checkout@v4
+
+      - name: Siapkan Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - run: pip install -r requirements.txt
+      - name: Pasang kebutuhan
+        run: pip install -r requirements.txt
 
-      - run: python bot.py
+      - name: Jalankan bot dan kirim Telegram
+        run: python bot.py
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
+
