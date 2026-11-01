@@ -106,41 +106,18 @@ if __name__ == "__main__":
             and nilai_rsi > 30
         )
 
+        
         if bullish or bearish:
-    sinyal = "BUY 🟢" if bullish else "SELL 🔴"
-else:
-    sinyal = "BELUM ADA SINYAL"
-
-kirim(
-    "TES BOT OKX M5\n"
-    f"Sinyal: {sinyal}\n"
-    f"EMA 9: {e9[-1]:.4f}\n"
-    f"EMA 21: {e21[-1]:.4f}\n"
-    f"RSI 14: {nilai_rsi:.2f}"
-)
             sinyal = "BUY 🟢" if bullish else "SELL 🔴"
+        else:
+            sinyal = "BELUM ADA SINYAL"
 
-            waktu = datetime.fromtimestamp(
-                int(ts)/1000,
-                timezone.utc
-            ) + timedelta(minutes=5)
+        kirim(
+            "TES BOT OKX M5\n"
+            f"Sinyal: {sinyal}\n"
+            f"EMA 9: {e9[-1]:.4f}\n"
+            f"EMA 21: {e21[-1]:.4f}\n"
+            f"RSI 14: {nilai_rsi:.2f}"
+        )
 
-            waktu_lokal = waktu.astimezone(
-                timezone(timedelta(hours=7))
-            )
-
-            kirim(
-                "🤖 SINYAL ACUAN CRYPTO IDX\n"
-                f"Sinyal: {sinyal}\n"
-                "Timeframe: M5\n"
-                f"Waktu entry: {waktu_lokal.strftime('%H:%M')} WIB\n"
-                f"EMA 9: {e9[-1]:.4f}\n"
-                f"EMA 21: {e21[-1]:.4f}\n"
-                f"RSI 14: {nilai_rsi:.2f}\n"
-                "Data: OKX, indeks simulasi 5 koin\n"
-                "Bukan harga resmi Stockity."
-            )
-
-    except Exception as e:
-        kirim("⚠️ ERROR BOT: " + str(e))
-        raise
+        
