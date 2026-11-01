@@ -4,8 +4,8 @@ import os
 import requests
 from datetime import datetime, timezone, timedelta
 
-TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
+TOKEN = os.environ["TELEGRAM_TOKEN"]
+CHAT_ID = os.environ["CHAT_ID"]
 
 COINS = {
     "BTC-USDT": 0.50,
@@ -15,109 +15,115 @@ COINS = {
     "XRP-USDT": 0.10
 }
 
-def kirim(pesan):
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    requests.post(url, data={
-        "chat_id": CHAT_ID,
-        "text": pesan
-    }, timeout=20).raise_for_status()
-
-def ambil_candle(symbol):
-    url = "https://www.okx.com/api/v5/market/candles"
-    r = requests.get(url, params={
-        "instId": symbol,
-        "bar": "5m",
-        "limit": "100"
-    }, timeout=20)
+def send(text):
+    r = requests.post(
+        f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+        data={"chat_id": CHAT_ID, "text": text},
+        timeout=20
+    )
     r.raise_for_status()
-    hasil = r.json()
 
-    if hasil.get("code") != "0":
-        raise ValueError(str(hasil))
+def candles(symbol):
+    r = requests.get(
+        "https://www.okx.com/api/v5/market/candles",
+        params={"instId": symbol, "bar": "5m", "limit": "100"},
+        timeout=20
+    )
+    r.raise_for_status()
+    j = r.json()
 
-    candles = [
-        x for x in hasil["data"]
-        if x[8] == "1"
+    if j.get("code") != "0":
+        raise RuntimeError(str(j))
+
+    rows = [x for x in j["data"] if x[8] == "1"]
+    rows.sort(key=lambda x: int(x[0]))
+
+    if len(rows) < 30:
+        raise RuntimeError("Candle tidak cukup: " + symbol)
+
+    return {x[0]: x for x in rows}
+
+def index_data():
+    all_data = {s: candles(s) for s in COINS}
+    common = set.intersection(
+        *(set(v.keys()) for v in all_data.values())
+    )
+    times = sorted(common, key=int)[-60:]
+
+    if len(times) < 30:
+        raise RuntimeError("Data candle antar koin tidak cocok")
+
+    values = []
+    for t in times:
+        value = 0.0
+        for symbol, weight in COINS.items():
+            value += weight * float(all_data[symbol][t][4])
+        values.append(value)
+
+    return values, times[-1]
+
+def ema(values, period):
+    alpha = 2 / (period + 1)
+    result = [values[0]]
+    for value in values[1:]:
+        result.append(alpha * value + (1-alpha) * result[-1])
+    return result
+
+def rsi(values, period=14):
+    changes = [
+        values[i] - values[i-1]
+        for i in range(1, len(values))
     ]
-    candles.sort(key=lambda x: int(x[0]))
+    recent = changes[-period:]
+    gains = sum(max(x, 0) for x in recent) / period
+    losses = sum(max(-x, 0) for x in recent) / period
 
-    if len(candles) < 30:
-        raise ValueError("Data candle kurang")
+    if losses == 0:
+        return 100.0
+    return 100 - 100 / (1 + gains / losses)
 
-    return candles
+def main():
+    values, timestamp = index_data()
+    fast = ema(values, 9)
+    slow = ema(values, 21)
+    strength = rsi(values)
 
-def buat_indeks():
-    semua = {coin: ambil_candle(coin) for coin in COINS}
+    if fast[-1] > slow[-1] and values[-1] > values[-2] and 50 < strength < 70:
+        signal = "BUY 🟢"
+    elif fast[-1] < slow[-1] and values[-1] < values[-2] and 30 < strength < 50:
+        signal = "SELL 🔴"
+    else:
+        signal = "TIDAK ADA SINYAL"
 
-    waktu = set(x[0] for x in semua["BTC-USDT"])
-    for data in semua.values():
-        waktu &= set(x[0] for x in data)
+    next_time = datetime.fromtimestamp(
+        int(timestamp) / 1000, timezone.utc
+    ) + timedelta(minutes=5)
 
-    waktu = sorted(waktu, key=int)[-60:]
+    local_time = next_time.astimezone(
+        timezone(timedelta(hours=7))
+    )
 
-    if len(waktu) < 30:
-        raise ValueError("Data waktu koin tidak cocok")
+    message = (
+        "🤖 BOT ACUAN CRYPTO IDX\n"
+        f"Sinyal: {signal}\n"
+        "Timeframe: M5\n"
+        f"Waktu candle berikutnya: {local_time:%H:%M} WIB\n"
+        f"EMA 9: {fast[-1]:.4f}\n"
+        f"EMA 21: {slow[-1]:.4f}\n"
+        f"RSI 14: {strength:.2f}\n"
+        "Data OKX, simulasi 5 koin; bukan harga resmi Stockity."
+    )
 
-    hasil = []
-    for ts in waktu:
-        nilai = 0
-        for coin, bobot in COINS.items():
-            data = {x[0]: x for x in semua[coin]}
-            nilai += bobot * float(data[ts][4])
-        hasil.append(nilai)
-
-    return hasil, waktu[-1]
-
-def ema(data, periode):
-    k = 2 / (periode + 1)
-    nilai = data[0]
-    hasil = []
-    for x in data:
-        nilai = x * k + nilai * (1-k)
-        hasil.append(nilai)
-    return hasil
-
-def rsi(data, periode=14):
-    perubahan = [data[i]-data[i-1] for i in range(1,len(data))]
-    naik = sum(max(x,0) for x in perubahan[-periode:])/periode
-    turun = sum(max(-x,0) for x in perubahan[-periode:])/periode
-    if turun == 0:
-        return 100
-    return 100-(100/(1+naik/turun))
+    send(message)
 
 if __name__ == "__main__":
     try:
-        data, ts = buat_indeks()
-        e9 = ema(data, 9)
-        e21 = ema(data, 21)
-        nilai_rsi = rsi(data)
-
-        bullish = (
-            e9[-1] > e21[-1]
-            and data[-1] > data[-2]
-            and nilai_rsi > 50
-            and nilai_rsi < 70
-        )
-
-        bearish = (
-            e9[-1] < e21[-1]
-            and data[-1] < data[-2]
-            and nilai_rsi < 50
-            and nilai_rsi > 30
-        )
-
-        
-        if bullish or bearish:
-            sinyal = "BUY 🟢" if bullish else "SELL 🔴"
-        else:
-            sinyal = "BELUM ADA SINYAL"
-
-        kirim(
-            "TES BOT OKX M5\n"
-            f"Sinyal: {sinyal}\n"
-            f"EMA 9: {e9[-1]:.4f}\n"
-            f"EMA 21: {e21[-1]:.4f}\n"
-            f"RSI 14: {nilai_rsi:.2f}"
-        )
+        main()
+    except Exception as error:
+        print("ERROR:", repr(error))
+        try:
+            send("⚠️ BOT ERROR: " + repr(error))
+        finally:
+            raise
 
         
