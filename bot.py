@@ -1,188 +1,159 @@
 
-
+        
 import os
-import json
 import requests
-import subprocess
 from datetime import datetime, timezone, timedelta
 
-TOKEN = os.environ["TELEGRAM_TOKEN"]
-CHAT_ID = os.environ["CHAT_ID"]
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 
 COINS = {
-    "BTC-USDT": 0.50,
-    "ETH-USDT": 0.20,
-    "BNB-USDT": 0.10,
-    "SOL-USDT": 0.10,
-    "XRP-USDT": 0.10
+"BTC-USDT": 0.50,
+"ETH-USDT": 0.20,
+"BNB-USDT": 0.10,
+"SOL-USDT": 0.10,
+"XRP-USDT": 0.10,
 }
 
-STATE_FILE = "state.json"
+def kirim(pesan):
+if not TOKEN or not CHAT_ID:
+raise ValueError("TELEGRAM_TOKEN atau CHAT_ID belum diatur di GitHub Secrets")
 
-def send(message):
-    r = requests.post(
-        f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-        data={"chat_id": CHAT_ID, "text": message},
-        timeout=20
+url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+r = requests.post(
+    url,
+    data={"chat_id": CHAT_ID, "text": pesan},
+    timeout=20,
+)
+r.raise_for_status()
+hasil = r.json()
+
+if not hasil.get("ok"):
+    raise ValueError(f"Telegram gagal mengirim: {hasil}")
+
+def ambil_candle(symbol):
+url = "https://www.okx.com/api/v5/market/candles"
+r = requests.get(
+url,
+params={"instId": symbol, "bar": "5m", "limit": "100"},
+timeout=20,
+)
+r.raise_for_status()
+hasil = r.json()
+
+if hasil.get("code") != "0":
+    raise ValueError(f"OKX gagal untuk {symbol}: {hasil}")
+
+candles = [x for x in hasil["data"] if x[8] == "1"]
+candles.sort(key=lambda x: int(x[0]))
+
+if len(candles) < 30:
+    raise ValueError(f"Data candle {symbol} kurang")
+
+return candles
+
+def buat_indeks():
+semua = {coin: ambil_candle(coin) for coin in COINS}
+
+waktu = set(x[0] for x in semua["BTC-USDT"])
+for data in semua.values():
+    waktu &= set(x[0] for x in data)
+
+waktu = sorted(waktu, key=int)[-60:]
+
+if len(waktu) < 30:
+    raise ValueError("Data waktu antar-koin tidak cocok")
+
+data_koin = {
+    coin: {x[0]: x for x in data}
+    for coin, data in semua.items()
+}
+
+nilai_indeks = []
+for ts in waktu:
+    nilai = sum(
+        bobot * float(data_koin[coin][ts][4])
+        for coin, bobot in COINS.items()
     )
-    r.raise_for_status()
+    nilai_indeks.append(nilai)
 
-def get_candles(symbol):
-    r = requests.get(
-        "https://www.okx.com/api/v5/market/candles",
-        params={"instId": symbol, "bar": "5m", "limit": "100"},
-        timeout=20
-    )
-    r.raise_for_status()
-    result = r.json()
+return nilai_indeks, waktu[-1]
 
-    if result.get("code") != "0":
-        raise RuntimeError(str(result))
+def ema(data, periode):
+k = 2 / (periode + 1)
+nilai = data[0]
+hasil = []
 
-    rows = [x for x in result["data"] if x[8] == "1"]
-    rows.sort(key=lambda x: int(x[0]))
+for x in data:
+    nilai = x * k + nilai * (1 - k)
+    hasil.append(nilai)
 
-    if len(rows) < 30:
-        raise RuntimeError("Data candle kurang: " + symbol)
+return hasil
 
-    return {x[0]: x for x in rows}
+def rsi(data, periode=14):
+perubahan = [data[i] - data[i - 1] for i in range(1, len(data))]
+terakhir = perubahan[-periode:]
 
-def make_index():
-    all_data = {s: get_candles(s) for s in COINS}
-    common = set.intersection(
-        *(set(v.keys()) for v in all_data.values())
-    )
-    times = sorted(common, key=int)[-60:]
+naik = sum(max(x, 0) for x in terakhir) / periode
+turun = sum(max(-x, 0) for x in terakhir) / periode
 
-    if len(times) < 30:
-        raise RuntimeError("Data candle tidak cocok")
+if turun == 0:
+    return 100.0
 
-    first = times[0]
-    values = []
-
-    for t in times:
-        value = 0
-        for symbol, weight in COINS.items():
-            base = float(all_data[symbol][first][4])
-            close = float(all_data[symbol][t][4])
-            value += weight * (close / base) * 100
-        values.append(value)
-
-    return values, times[-1]
-
-def ema(values, period):
-    alpha = 2 / (period + 1)
-    result = [values[0]]
-
-    for value in values[1:]:
-        result.append(
-            alpha * value + (1 - alpha) * result[-1]
-        )
-
-    return result
-
-def rsi(values, period=14):
-    changes = [
-        values[i] - values[i-1]
-        for i in range(1, len(values))
-    ]
-    recent = changes[-period:]
-    gains = sum(max(x, 0) for x in recent) / period
-    losses = sum(max(-x, 0) for x in recent) / period
-
-    if losses == 0:
-        return 100
-
-    return 100 - 100 / (1 + gains / losses)
-
-def save_state(candle):
-    state = {"last_candle": candle}
-
-    with open(STATE_FILE, "w") as f:
-        json.dump(state, f)
-
-    subprocess.run(
-        ["git", "config", "user.name", "Stockity Bot"],
-        check=True
-    )
-    subprocess.run(
-        ["git", "config", "user.email", "bot@users.noreply.github.com"],
-        check=True
-    )
-    subprocess.run(["git", "add", STATE_FILE], check=True)
-
-    check = subprocess.run(
-        ["git", "diff", "--cached", "--quiet"]
-    )
-
-    if check.returncode == 1:
-        subprocess.run(
-            ["git", "commit", "-m", "Update last signal candle"],
-            check=True
-        )
-        subprocess.run(["git", "push"], check=True)
+return 100 - (100 / (1 + naik / turun))
 
 def main():
-    values, candle = make_index()
+data, ts = buat_indeks()
 
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE) as f:
-            state = json.load(f)
-    else:
-        state = {"last_candle": ""}
+e9 = ema(data, 9)
+e21 = ema(data, 21)
+nilai_rsi = rsi(data)
 
-    if state.get("last_candle") == candle:
-        print("Candle sudah diproses. Tidak mengirim ulang.")
-        return
+bullish = (
+    e9[-1] > e21[-1]
+    and data[-1] > data[-2]
+    and 50 < nilai_rsi < 70
+)
 
-    fast = ema(values, 9)
-    slow = ema(values, 21)
-    strength = rsi(values)
+bearish = (
+    e9[-1] < e21[-1]
+    and data[-1] < data[-2]
+    and 30 < nilai_rsi < 50
+)
 
-    if (
-        fast[-1] > slow[-1]
-        and values[-1] > values[-2]
-        and 50 < strength < 70
-    ):
-        signal = "BUY 🟢"
-    elif (
-        fast[-1] < slow[-1]
-        and values[-1] < values[-2]
-        and 30 < strength < 50
-    ):
-        signal = "SELL 🔴"
-    else:
-        signal = None
+if bullish:
+    sinyal = "BUY 🟢"
+elif bearish:
+    sinyal = "SELL 🔴"
+else:
+    sinyal = "BELUM ADA SINYAL"
 
-    # Simpan candle walaupun tidak ada sinyal
-    save_state(candle)
+waktu_candle = datetime.fromtimestamp(
+    int(ts) / 1000, timezone.utc
+) + timedelta(minutes=5)
 
-    if signal:
-        next_time = datetime.fromtimestamp(
-            int(candle) / 1000,
-            timezone.utc
-        ) + timedelta(minutes=5)
+waktu_lokal = waktu_candle.astimezone(
+    timezone(timedelta(hours=7))
+)
 
-        local_time = next_time.astimezone(
-            timezone(timedelta(hours=7))
-        )
+pesan = (
+    "🤖 BOT ACUAN CRYPTO IDX\n"
+    f"Sinyal: {sinyal}\n"
+    "Timeframe: M5\n"
+    f"Waktu candle berikutnya: {waktu_lokal.strftime('%H:%M')} WIB\n"
+    f"EMA 9: {e9[-1]:.4f}\n"
+    f"EMA 21: {e21[-1]:.4f}\n"
+    f"RSI 14: {nilai_rsi:.2f}\n"
+    "Data OKX, simulasi 5 koin; bukan harga resmi Stockity."
+)
 
-        send(
-            "🤖 SINYAL ACUAN CRYPTO IDX\n"
-            f"Sinyal: {signal}\n"
-            "Timeframe: M5\n"
-            f"Waktu candle berikutnya: {local_time:%H:%M} WIB\n"
-            f"EMA 9: {fast[-1]:.4f}\n"
-            f"EMA 21: {slow[-1]:.4f}\n"
-            f"RSI 14: {strength:.2f}\n"
-            "Acuan simulasi 5 koin OKX, bukan harga resmi Stockity."
-        )
+kirim(pesan)
+print("Pesan berhasil dikirim ke Telegram:")
+print(pesan)
 
-if __name__ == "__main__":
-    try:
-        main()
-    except Exception as error:
-        print("ERROR:", repr(error))
-        raise
-
-        
+if name == "main":
+try:
+main()
+except Exception as e:
+print(f"ERROR BOT: {e}")
+raise
