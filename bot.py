@@ -1,5 +1,8 @@
 
+
 import os
+import json
+import subprocess
 import requests
 from datetime import datetime, timezone, timedelta
 
@@ -14,38 +17,21 @@ COINS = {
     "XRP-USDT": 0.10,
 }
 
-
-def kirim(pesan):
-    if not TOKEN or not CHAT_ID:
-        raise ValueError(
-            "TELEGRAM_TOKEN atau CHAT_ID belum diatur di GitHub Secrets"
-        )
-
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    response = requests.post(
-        url,
-        data={"chat_id": CHAT_ID, "text": pesan},
-        timeout=20,
-    )
-    response.raise_for_status()
-
-    hasil = response.json()
-    if not hasil.get("ok"):
-        raise ValueError(f"Telegram gagal mengirim: {hasil}")
+STATE_FILE = "signal_state.json"
 
 
 def ambil_candle(symbol):
     url = "https://www.okx.com/api/v5/market/candles"
-    response = requests.get(
+    r = requests.get(
         url,
         params={"instId": symbol, "bar": "5m", "limit": "100"},
         timeout=20,
     )
-    response.raise_for_status()
-    hasil = response.json()
+    r.raise_for_status()
+    hasil = r.json()
 
     if hasil.get("code") != "0":
-        raise ValueError(f"OKX gagal untuk {symbol}: {hasil}")
+        raise ValueError(f"OKX gagal: {hasil}")
 
     candles = [c for c in hasil["data"] if c[8] == "1"]
     candles.sort(key=lambda c: int(c[0]))
@@ -73,15 +59,15 @@ def buat_indeks():
         for coin, data in semua.items()
     }
 
-    nilai_indeks = []
+    nilai = []
     for ts in waktu:
-        nilai = sum(
+        harga = sum(
             bobot * float(data_koin[coin][ts][4])
             for coin, bobot in COINS.items()
         )
-        nilai_indeks.append(nilai)
+        nilai.append(harga)
 
-    return nilai_indeks, waktu[-1]
+    return nilai, waktu[-1]
 
 
 def ema(data, periode):
@@ -101,8 +87,8 @@ def rsi(data, periode=14):
         data[i] - data[i - 1]
         for i in range(1, len(data))
     ]
-    terakhir = perubahan[-periode:]
 
+    terakhir = perubahan[-periode:]
     naik = sum(max(x, 0) for x in terakhir) / periode
     turun = sum(max(-x, 0) for x in terakhir) / periode
 
@@ -112,6 +98,55 @@ def rsi(data, periode=14):
     return 100 - (100 / (1 + naik / turun))
 
 
+def baca_status():
+    if not os.path.exists(STATE_FILE):
+        return ""
+
+    with open(STATE_FILE, "r") as f:
+        return json.load(f).get("last_signal", "")
+
+
+def simpan_status(sinyal):
+    with open(STATE_FILE, "w") as f:
+        json.dump({"last_signal": sinyal}, f)
+
+    subprocess.run(["git", "config", "user.name", "Bot AI Stockity"], check=True)
+    subprocess.run(["git", "config", "user.email", "bot@github.com"], check=True)
+    subprocess.run(["git", "add", STATE_FILE], check=True)
+
+    perubahan = subprocess.run(
+        ["git", "diff", "--cached", "--quiet"]
+    )
+
+    if perubahan.returncode == 1:
+        subprocess.run(
+            ["git", "commit", "-m", "Update signal state"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "push", "origin", "HEAD:main"],
+            check=True,
+        )
+
+
+def kirim(pesan):
+    if not TOKEN or not CHAT_ID:
+        raise ValueError("Token Telegram atau CHAT_ID belum diatur")
+
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+
+    r = requests.post(
+        url,
+        data={"chat_id": CHAT_ID, "text": pesan},
+        timeout=20,
+    )
+    r.raise_for_status()
+
+    hasil = r.json()
+    if not hasil.get("ok"):
+        raise ValueError(f"Telegram gagal: {hasil}")
+
+
 def main():
     data, ts = buat_indeks()
 
@@ -119,30 +154,39 @@ def main():
     e21 = ema(data, 21)
     nilai_rsi = rsi(data)
 
-    bullish = (
+    if (
         e9[-1] > e21[-1]
         and data[-1] > data[-2]
         and 50 < nilai_rsi < 70
-    )
+    ):
+        sinyal = "BUY 🟢"
 
-    bearish = (
+    elif (
         e9[-1] < e21[-1]
         and data[-1] < data[-2]
         and 30 < nilai_rsi < 50
-    )
-
-    if bullish:
-        sinyal = "BUY 🟢"
-    elif bearish:
+    ):
         sinyal = "SELL 🔴"
-    else:
-        sinyal = "BELUM ADA SINYAL"
 
-    waktu_candle = datetime.fromtimestamp(
+    else:
+        sinyal = "WAIT"
+
+    sebelumnya = baca_status()
+
+    if sinyal == sebelumnya:
+        print(f"Tidak ada sinyal baru: {sinyal}")
+        return
+
+    if sinyal == "WAIT":
+        print("WAIT: tidak mengirim pesan Telegram")
+        simpan_status(sinyal)
+        return
+
+    waktu = datetime.fromtimestamp(
         int(ts) / 1000, timezone.utc
     ) + timedelta(minutes=5)
 
-    waktu_lokal = waktu_candle.astimezone(
+    waktu_wib = waktu.astimezone(
         timezone(timedelta(hours=7))
     )
 
@@ -150,7 +194,7 @@ def main():
         "🤖 BOT ACUAN CRYPTO IDX\n"
         f"Sinyal: {sinyal}\n"
         "Timeframe: M5\n"
-        f"Waktu candle berikutnya: {waktu_lokal.strftime('%H:%M')} WIB\n"
+        f"Waktu candle berikutnya: {waktu_wib.strftime('%H:%M')} WIB\n"
         f"EMA 9: {e9[-1]:.4f}\n"
         f"EMA 21: {e21[-1]:.4f}\n"
         f"RSI 14: {nilai_rsi:.2f}\n"
@@ -158,7 +202,9 @@ def main():
     )
 
     kirim(pesan)
-    print("Pesan berhasil dikirim ke Telegram:")
+    simpan_status(sinyal)
+
+    print("Sinyal baru berhasil dikirim:")
     print(pesan)
 
 
