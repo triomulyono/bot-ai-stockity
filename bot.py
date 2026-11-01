@@ -107,6 +107,17 @@ if __name__ == "__main__":
         )
 
         if bullish or bearish:
+    sinyal = "BUY 🟢" if bullish else "SELL 🔴"
+else:
+    sinyal = "BELUM ADA SINYAL"
+
+kirim(
+    "TES BOT OKX M5\n"
+    f"Sinyal: {sinyal}\n"
+    f"EMA 9: {e9[-1]:.4f}\n"
+    f"EMA 21: {e21[-1]:.4f}\n"
+    f"RSI 14: {nilai_rsi:.2f}"
+)
             sinyal = "BUY 🟢" if bullish else "SELL 🔴"
 
             waktu = datetime.fromtimestamp(
