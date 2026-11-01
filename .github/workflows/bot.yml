@@ -1,4 +1,3 @@
-
 name: Bot AI Stockity
 
 on:
@@ -29,140 +28,181 @@ jobs:
           python - <<'PY'
           import os
           import requests
-
-          BASE = "https://www.okx.com"
-
-          # Data candle BTC-USDT, timeframe 5 menit
-          url = BASE + "/api/v5/market/candles"
-          params = {
-              "instId": "BTC-USDT",
-              "bar": "5m",
-              "limit": "100"
-          }
-
-          response = requests.get(url, params=params, timeout=20)
-          response.raise_for_status()
-          result = response.json()
-
-          if result.get("code") != "0" or not result.get("data"):
-              raise RuntimeError("Data candle OKX gagal diambil")
-
-          # OKX mengurutkan candle terbaru terlebih dahulu.
-          # Abaikan candle terbaru yang mungkin masih berjalan.
-          rows = result["data"]
-          candles = [
-              {
-                  "time": int(r[0]),
-                  "o": float(r[1]),
-                  "h": float(r[2]),
-                  "l": float(r[3]),
-                  "c": float(r[4]),
-                  "confirm": r[8]
-              }
-              for r in rows
-              if r[8] == "1"
-          ]
-
-          candles.sort(key=lambda x: x["time"])
-
-          if len(candles) < 30:
-              raise RuntimeError("Candle selesai kurang dari 30")
-
-          closes = [c["c"] for c in candles]
-
-          def ema(values, period):
-              alpha = 2 / (period + 1)
-              value = values[0]
-              for price in values[1:]:
-                  value = alpha * price + (1 - alpha) * value
-              return value
-
-          def rsi(values, period=14):
-              changes = [
-                  values[i] - values[i - 1]
-                  for i in range(1, len(values))
-              ]
-              gains = [max(x, 0) for x in changes]
-              losses = [max(-x, 0) for x in changes]
-
-              avg_gain = sum(gains[:period]) / period
-              avg_loss = sum(losses[:period]) / period
-
-              for i in range(period, len(changes)):
-                  avg_gain = (
-                      avg_gain * (period - 1) + gains[i]
-                  ) / period
-                  avg_loss = (
-                      avg_loss * (period - 1) + losses[i]
-                  ) / period
-
-              if avg_loss == 0:
-                  return 100 if avg_gain > 0 else 50
-
-              return 100 - 100 / (1 + avg_gain / avg_loss)
-
-          e9 = ema(closes, 9)
-          e21 = ema(closes, 21)
-          rv = rsi(closes)
-
-          # Lima candle yang sudah selesai
-          last5 = candles[-5:]
-          bullish = sum(c["c"] > c["o"] for c in last5)
-          bearish = sum(c["c"] < c["o"] for c in last5)
-
-          # Sinyal harus didukung candle, EMA, dan RSI.
-          signal = "NO SIGNAL ⚪"
-          reason = "Arah belum cukup jelas"
-
-          if e9 > e21 and rv > 50 and bullish >= 3:
-              signal = "BUY 🟢"
-              reason = "EMA naik, RSI di atas 50, candle dominan bullish"
-          elif e9 < e21 and rv < 50 and bearish >= 3:
-              signal = "SELL 🔴"
-              reason = "EMA turun, RSI di bawah 50, candle dominan bearish"
-
-          last = last5[-1]
           from datetime import datetime, timezone, timedelta
 
-          wib = timezone(timedelta(hours=7))
-          candle_time = datetime.fromtimestamp(
-              last["time"] / 1000, tz=timezone.utc
-          ).astimezone(wib)
+          def main():
+              token = os.environ.get("TELEGRAM_TOKEN", "").strip()
+              chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 
-          message = (
-              "🤖 BOT AI STOCKITY\n\n"
-              f"📊 Prediksi: {signal}\n"
-              "⏱ Timeframe: M5\n"
-              f"🕯 Candle terakhir: {candle_time:%H:%M} WIB\n\n"
-              f"Candle hijau: {bullish}/5\n"
-              f"Candle merah: {bearish}/5\n"
-              f"EMA 9: {e9:.2f}\n"
-              f"EMA 21: {e21:.2f}\n"
-              f"RSI 14: {rv:.2f}\n\n"
-              f"📌 Analisis: {reason}\n"
-              "⚠️ Prediksi bukan jaminan hasil."
-          )
+              if not token or not chat_id:
+                  raise RuntimeError(
+                      "Token atau Chat ID tidak terbaca. "
+                      "Periksa Repository Secrets."
+                  )
 
-          token = os.environ.get("TELEGRAM_TOKEN")
-          chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+              url = "https://www.okx.com/api/v5/market/candles"
+              params = {
+                  "instId": "BTC-USDT",
+                  "bar": "5m",
+                  "limit": "100"
+              }
 
-          if not token or not chat_id:
-              raise RuntimeError(
-                  "Periksa GitHub Secrets TELEGRAM_TOKEN dan TELEGRAM_CHAT_ID"
+              response = requests.get(
+                  url, params=params, timeout=20
+              )
+              response.raise_for_status()
+              data = response.json()
+
+              if data.get("code") != "0" or not data.get("data"):
+                  raise RuntimeError(
+                      "OKX gagal memberikan data candle: "
+                      + str(data.get("msg", "respons kosong"))
+                  )
+
+              # Ambil hanya candle yang sudah selesai.
+              candles = []
+              for row in data["data"]:
+                  if row[8] == "1":
+                      candles.append({
+                          "time": int(row[0]),
+                          "open": float(row[1]),
+                          "high": float(row[2]),
+                          "low": float(row[3]),
+                          "close": float(row[4])
+                      })
+
+              candles.sort(key=lambda x: x["time"])
+
+              if len(candles) < 30:
+                  raise RuntimeError(
+                      "Data candle selesai tidak mencukupi"
+                  )
+
+              closes = [c["close"] for c in candles]
+
+              def calculate_ema(values, period):
+                  alpha = 2 / (period + 1)
+                  result = values[0]
+                  for value in values[1:]:
+                      result = (
+                          alpha * value
+                          + (1 - alpha) * result
+                      )
+                  return result
+
+              def calculate_rsi(values, period=14):
+                  changes = [
+                      values[i] - values[i - 1]
+                      for i in range(1, len(values))
+                  ]
+
+                  gains = [max(x, 0) for x in changes]
+                  losses = [max(-x, 0) for x in changes]
+
+                  avg_gain = sum(gains[:period]) / period
+                  avg_loss = sum(losses[:period]) / period
+
+                  for i in range(period, len(changes)):
+                      avg_gain = (
+                          avg_gain * (period - 1) + gains[i]
+                      ) / period
+                      avg_loss = (
+                          avg_loss * (period - 1) + losses[i]
+                      ) / period
+
+                  if avg_loss == 0:
+                      return 100 if avg_gain > 0 else 50
+
+                  return 100 - (
+                      100 / (1 + avg_gain / avg_loss)
+                  )
+
+              ema9 = calculate_ema(closes, 9)
+              ema21 = calculate_ema(closes, 21)
+              rsi14 = calculate_rsi(closes, 14)
+
+              last5 = candles[-5:]
+              bullish = sum(
+                  c["close"] > c["open"] for c in last5
+              )
+              bearish = sum(
+                  c["close"] < c["open"] for c in last5
               )
 
-          telegram_url = (
-              f"https://api.telegram.org/bot{token}/sendMessage"
-          )
-          sent = requests.post(
-              telegram_url,
-              json={"chat_id": chat_id, "text": message},
-              timeout=20
-          )
-          sent.raise_for_status()
+              signal = "NO SIGNAL ⚪"
+              reason = "Arah candle belum meyakinkan"
 
-          if not sent.json().get("ok"):
-              raise RuntimeError("Telegram gagal mengirim pesan")
+              if (
+                  ema9 > ema21
+                  and rsi14 > 50
+                  and bullish >= 3
+              ):
+                  signal = "BUY 🟢"
+                  reason = (
+                      "EMA naik, RSI bullish, "
+                      "dan mayoritas candle hijau"
+                  )
+              elif (
+                  ema9 < ema21
+                  and rsi14 < 50
+                  and bearish >= 3
+              ):
+                  signal = "SELL 🔴"
+                  reason = (
+                      "EMA turun, RSI bearish, "
+                      "dan mayoritas candle merah"
+                  )
 
-          print("Sinyal berhasil dikirim")
+              last = last5[-1]
+              wib = timezone(timedelta(hours=7))
+              candle_time = datetime.fromtimestamp(
+                  last["time"] / 1000,
+                  tz=timezone.utc
+              ).astimezone(wib)
+
+              message = (
+                  "🤖 BOT AI STOCKITY\n\n"
+                  f"Prediksi: {signal}\n"
+                  "Timeframe: M5\n"
+                  f"Candle terakhir: {candle_time:%H:%M} WIB\n\n"
+                  f"Candle hijau: {bullish}/5\n"
+                  f"Candle merah: {bearish}/5\n"
+                  f"Harga terakhir: {last['close']:.2f}\n"
+                  f"EMA 9: {ema9:.2f}\n"
+                  f"EMA 21: {ema21:.2f}\n"
+                  f"RSI 14: {rsi14:.2f}\n\n"
+                  f"Analisis: {reason}\n"
+                  "Catatan: prediksi tidak menjamin hasil."
+              )
+
+              telegram_url = (
+                  f"https://api.telegram.org/bot{token}/sendMessage"
+              )
+
+              sent = requests.post(
+                  telegram_url,
+                  json={
+                      "chat_id": chat_id,
+                      "text": message
+                  },
+                  timeout=20
+              )
+
+              if not sent.ok:
+                  raise RuntimeError(
+                      "Telegram gagal: HTTP "
+                      + str(sent.status_code)
+                      + ". Periksa token dan Chat ID."
+                  )
+
+              result = sent.json()
+              if not result.get("ok"):
+                  raise RuntimeError(
+                      "Telegram menolak pesan: "
+                      + str(result.get("description", "unknown error"))
+                  )
+
+              print("Sinyal berhasil dikirim ke Telegram.")
+
+          main()
           PY
