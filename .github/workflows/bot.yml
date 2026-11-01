@@ -1,0 +1,133 @@
+name: Bot AI Stockity
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  signal:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Jalankan Bot Sinyal
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instal library
+        run: pip install requests
+
+      - name: Analisis dan Kirim Telegram
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python - <<'PY'
+          import os
+          import requests
+          from datetime import datetime, timezone
+
+          token = os.getenv("TELEGRAM_TOKEN", "").strip()
+          chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+
+          if not token or not chat_id:
+              raise RuntimeError(
+                  "Token atau Chat ID tidak terbaca. "
+                  "Periksa Repository Secrets."
+              )
+
+          def kirim(pesan):
+              url = f"https://api.telegram.org/bot{token}/sendMessage"
+              r = requests.post(
+                  url,
+                  data={"chat_id": chat_id, "text": pesan},
+                  timeout=20
+              )
+              r.raise_for_status()
+              hasil = r.json()
+              if not hasil.get("ok"):
+                  raise RuntimeError("Telegram menolak pesan.")
+
+          url = "https://www.okx.com/api/v5/market/candles"
+          params = {
+              "instId": "BTC-USDT",
+              "bar": "5m",
+              "limit": "100"
+          }
+
+          r = requests.get(url, params=params, timeout=20)
+          r.raise_for_status()
+          hasil = r.json()
+
+          if hasil.get("code") != "0" or not hasil.get("data"):
+              raise RuntimeError("Data candle OKX gagal diambil.")
+
+          # OKX mengembalikan candle terbaru terlebih dahulu.
+          data = list(reversed(hasil["data"]))
+          candle = data[:-1]  # Abaikan candle yang masih berjalan.
+
+          if len(candle) < 30:
+              raise RuntimeError("Data candle belum cukup.")
+
+          close = [float(x[4]) for x in candle]
+          lima = candle[-5:]
+
+          def ema(nilai, periode):
+              alpha = 2 / (periode + 1)
+              hasil_ema = nilai[0]
+              for harga in nilai[1:]:
+                  hasil_ema = alpha * harga + (1 - alpha) * hasil_ema
+              return hasil_ema
+
+          def rsi(nilai, periode=14):
+              perubahan = [
+                  nilai[i] - nilai[i - 1]
+                  for i in range(1, len(nilai))
+              ]
+              bagian = perubahan[-periode:]
+              naik = sum(max(x, 0) for x in bagian) / periode
+              turun = sum(max(-x, 0) for x in bagian) / periode
+              if turun == 0:
+                  return 100 if naik > 0 else 50
+              return 100 - (100 / (1 + naik / turun))
+
+          e9 = ema(close[-50:], 9)
+          e21 = ema(close[-80:], 21)
+          nilai_rsi = rsi(close)
+
+          buka = float(lima[-1][1])
+          tutup = float(lima[-1][4])
+          arah_lima = "NAIK" if tutup > buka else (
+              "TURUN" if tutup < buka else "DATAR"
+          )
+
+          if e9 > e21 and nilai_rsi >= 55 and tutup > buka:
+              sinyal = "BUY 🟢"
+          elif e9 < e21 and nilai_rsi <= 45 and tutup < buka:
+              sinyal = "SELL 🔴"
+          else:
+              sinyal = "TUNGGU ⚪"
+
+          waktu = datetime.now(timezone.utc).strftime("%d-%m-%Y %H:%M UTC")
+          pesan = (
+              "🤖 BOT AI STOCKITY — SIMULASI\n\n"
+              "Instrumen sumber: BTC-USDT (OKX)\n"
+              "Timeframe: M5\n"
+              "5 candle terakhir dianalisis\n\n"
+              f"Sinyal: {sinyal}\n"
+              f"Arah candle terakhir: {arah_lima}\n"
+              f"Harga penutupan: {tutup:.2f}\n"
+              f"EMA 9: {e9:.2f}\n"
+              f"EMA 21: {e21:.2f}\n"
+              f"RSI 14: {nilai_rsi:.2f}\n"
+              f"Waktu analisis: {waktu}\n\n"
+              "⚠️ Data ini bukan data langsung Crypto IDX Stockity.\n"
+              "Sinyal hanya perkiraan dan tidak menjamin keuntungan."
+          )
+
+          kirim(pesan)
+          print("Sinyal berhasil dikirim ke Telegram.")
+          PY
