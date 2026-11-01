@@ -1,6 +1,6 @@
 name: Bot AI Stockity
 
-on:
+'on':
   workflow_dispatch:
   schedule:
     - cron: "*/5 * * * *"
@@ -17,4 +17,3 @@ jobs:
       - run: python bot.py
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-#
